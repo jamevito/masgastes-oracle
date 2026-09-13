@@ -1,0 +1,63 @@
+name: Buscar instancia Oracle
+
+# Cada 15 minutos. GitHub avisa: los eventos programados "can be delayed during
+# periods of high loads" y algunos pueden descartarse. Da igual: esto es una
+# loteria, no un reloj. Perder una tirada no cuesta nada.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:        # boton para lanzarlo a mano desde la pestana Actions
+
+permissions:
+  contents: read
+  issues: write             # para abrirte una incidencia cuando entre
+
+env:
+  OCI_REGION: eu-madrid-1
+  NOMBRE: masgastes
+
+jobs:
+  intentar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Instalar la CLI de Oracle
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet oci-cli
+
+      - name: Configurar credenciales
+        env:
+          OCI_KEY: ${{ secrets.OCI_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${OCI_REGION}
+          key_file=$HOME/.oci/key.pem
+          EOF
+          chmod 600 ~/.oci/config
+
+      - name: Intentar crear la instancia
+        id: intento
+        env:
+          T: ${{ secrets.OCI_TENANCY_OCID }}
+          SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: bash intentar.sh
+
+      - name: Avisarme si ha entrado
+        if: steps.intento.outputs.creada == 'si'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IP: ${{ steps.intento.outputs.ip }}
+          FORMA: ${{ steps.intento.outputs.forma }}
+        run: |
+          gh issue create \
+            --title "Oracle ha soltado una maquina: $IP" \
+            --body "$(printf 'Forma: **%s**\nIP publica: **%s**\n\nSiguiente paso, desde tu PC:\n\n1. Abre `servidor\\DESPLEGAR.ps1`\n2. Pon `$IP = "%s"`, el subdominio de DuckDNS y una contrasena\n3. Ejecutalo\n\nY cuando el servidor este en pie, desactiva este workflow:\npestana **Actions** -> **Buscar instancia Oracle** -> boton `...` -> **Disable workflow**.\n' "$FORMA" "$IP" "$IP")"
