@@ -45,7 +45,10 @@ jobs:
           } > ~/.oci/config
           chmod 600 ~/.oci/key.pem ~/.oci/config
           echo "Credenciales escritas. Comprobando que Oracle las acepta..."
-          oci iam region list --query 'data[0].name' --raw-output
+          # region-subscription list devuelve TU region. 'region list' devolvia
+          # el catalogo global entero y su primera entrada (eu-amsterdam-1), que
+          # no dice nada de esta cuenta.
+          oci iam region-subscription list --query 'data[*]."region-name"' --raw-output
 
       - name: Intentar crear la instancia
         id: intento
@@ -63,6 +66,12 @@ jobs:
           #   SSH_PUB  el contenido de tu clave publica
           #   OCI_REGION, NOMBRE
           #
+          # OJO: GitHub ejecuta los bloques 'run' con 'bash -e', que aborta el script en
+          # cuanto un comando devuelve error. Aqui eso es exactamente lo contrario de lo
+          # que queremos: que 'oci instance launch' falle es el caso NORMAL (no hay
+          # capacidad) y hay que leer el mensaje, no morirse sin decir nada. Por eso lo
+          # desactivamos a proposito.
+          set +e
           set -uo pipefail
 
           : "${T:?falta el tenancy}"
@@ -95,6 +104,7 @@ jobs:
           #    Se busca en cada ejecucion en vez de guardarlo: los OCID de las imagenes
           #    de Ubuntu cambian cada vez que Canonical publica una nueva.
           # --------------------------------------------------------------------------
+          echo "Compartimento: ${T:0:20}..."
           SUBNET=$(oci network subnet list -c "$T" --all 2>/dev/null | jq -r '.data[0].id // empty')
           [ -n "$SUBNET" ] || { echo "No encuentro ninguna subnet. ¿Creaste la VCN?"; salida creada no; exit 1; }
 
@@ -116,6 +126,7 @@ jobs:
                   --shape "$FORMA" --sort-by TIMECREATED --sort-order DESC 2>/dev/null \
                 | jq -r '.data[0].id // empty')
           [ -n "$IMG" ] || { echo "Sin imagen de Ubuntu para $FORMA."; salida creada no; exit 0; }
+          echo "Subnet, ${#ADS[@]} dominio(s) e imagen de Ubuntu localizados. Forma de esta vuelta: $FORMA"
 
           # --------------------------------------------------------------------------
           # 2. Un intento por dominio de disponibilidad.
@@ -147,13 +158,15 @@ jobs:
             # Oracle escribe esto de varias formas ("Out of capacity", "Out of host
             # capacity.", "out of capacity for shape...") y cambia la redaccion cada dos
             # por tres, asi que comparamos en minusculas y sin exigir la frase exacta.
+            echo "--- respuesta de Oracle (codigo $RC) ---"
+            echo "$RES" | tail -20
+            echo "----------------------------------------"
             LOW=$(printf '%s' "$RES" | tr '[:upper:]' '[:lower:]')
             case "$LOW" in
               *toomanyrequests*|*"too many requests"*)
                 echo "Oracle nos limita ahora mismo. Se reintenta en la proxima vuelta." ;;
               *limitexceeded*|*"reached the limit"*|*"exceeded the service limit"*)
                 echo "CUPO AGOTADO -- ya tienes instancias gratuitas creadas."
-                echo "$RES"
                 salida creada no
                 exit 1 ;;
               *capacity*)
@@ -162,8 +175,7 @@ jobs:
                 # No se para el workflow por esto: la proxima ejecucion vuelve a probar.
                 # Si es un problema de verdad (credenciales, permisos) fallara siempre y
                 # GitHub te mandara un correo avisando de que el workflow falla.
-                echo "Error no reconocido:"
-                echo "$RES"
+                echo "Error no reconocido (ver la respuesta de arriba)."
                 salida creada no
                 exit 1 ;;
             esac
